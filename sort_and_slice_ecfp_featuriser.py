@@ -1,9 +1,33 @@
 import numpy as np
 from rdkit.Chem import rdFingerprintGenerator
+import pandas as pd
+
+# import general packages
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import warnings
+warnings.filterwarnings("ignore")
+
+# import custom code written for this project
+from modules import *
+
+# import RDKit
+from rdkit import Chem
+from rdkit.Chem import AllChem
 
 
+# import and check funtionality of pytorch
+import torch
 
-def create_sort_and_slice_ecfp_featuriser(mols_train, 
+
+from e3fp.pipeline import fprints_from_mol, fprints_from_smiles
+from e3fp.fingerprint.generate import fprints_dict_from_sdf
+from e3fp.fingerprint.fprint import Fingerprint, CountFingerprint
+
+from e3fp.fingerprint.fprinter import Fingerprinter
+
+def create_sort_and_slice_e3fp_featuriser(mols_train, 
                                           max_radius = 2, 
                                           pharm_atom_invs = False, 
                                           bond_invs = True, 
@@ -79,24 +103,37 @@ def create_sort_and_slice_ecfp_featuriser(mols_train,
     
     """
     
-    
-    
+    e3fp_generator = Fingerprinter(bits=1024, level=5, radius_multiplier=1.718, 
+                       stereo=True, counts=False, include_disconnected=True, 
+                       rdkit_invariants=False, exclude_floating=True, remove_duplicate_substructs=True)
+    mole = mols_train[0]#
+    mole.SetProp("_Name", 'smiles')
+    # Chem.AddHs(mole, add_coords=True)
+    AllChem.EmbedMolecule(mole, maxAttempts=1000)
+    e3fp_generator.run(conf = mole.GetConformer(), mol = mole)
+    substructures = {}
+    substructures[mole] = e3fp_generator.func_identifiers_to_shells()
+    # e3fp_generator.substructs_to_pdb(level=5, bits=None, out_dir='substructs_bits_1024', reorient=True, exact=False)
+    # run(conf = mole.GetConformer(), mol = mole,  return_substruct= True)
+    breakpoint()
     # create a function sub_id_enumerator that maps a mol object to a dictionary whose keys are the integer substructure identifiers in mol and whose values are the associated substructure counts (i.e., how often each substructure appears in mol)
     morgan_generator = rdFingerprintGenerator.GetMorganGenerator(radius = max_radius,
                                                                  atomInvariantsGenerator = rdFingerprintGenerator.GetMorganFeatureAtomInvGen() if pharm_atom_invs == True else rdFingerprintGenerator.GetMorganAtomInvGen(includeRingMembership = True),
                                                                  useBondTypes = bond_invs,
                                                                  includeChirality = chirality)
     
-    sub_id_enumerator = lambda mol: morgan_generator.GetSparseCountFingerprint(mol).GetNonzeroElements()
+    sub_id_enumerator = lambda mol: morgan_generator.GetSparseCountFingerprint(mole).GetNonzeroElements()
     
     # construct dictionary that maps each integer substructure identifier sub_id in mols_train to its associated prevalence (i.e., to the total number of compounds in mols_train that contain sub_id at least once)
     sub_ids_to_prevs_dict = {}
     for mol in mols_train:
         for sub_id in sub_id_enumerator(mol).keys():
             sub_ids_to_prevs_dict[sub_id] = sub_ids_to_prevs_dict.get(sub_id, 0) + 1
+    breakpoint()
 
     # create list of integer substructure identifiers sorted by prevalence in mols_train
     sub_ids_sorted_list = sorted(sub_ids_to_prevs_dict, key = lambda sub_id: (sub_ids_to_prevs_dict[sub_id], break_ties_with(sub_id)), reverse = True)
+    breakpoint()
     
     # create auxiliary function that generates standard unit vectors in NumPy
     def standard_unit_vector(dim, k):
@@ -131,3 +168,29 @@ def create_sort_and_slice_ecfp_featuriser(mols_train,
         print("Number of unique circular substructures with the specified parameters in molecular training set = ", len(sub_ids_to_prevs_dict))
 
     return ecfp_featuriser
+
+
+if __name__ == "__main__":
+    settings_dict = {}
+    # MoleculeNet Lipophilicity
+
+    settings_dict["dataset_name"] = "moleculenet_lipophilicity"
+    settings_dict["task_type"] = "regression"
+    settings_dict["prop_name"] = "exp"
+    dataframe = pd.read_csv("data/" + settings_dict["dataset_name"] + "/" + "clean_data.csv", sep = ",")
+    # smiles = dataframe["SMILES"]
+    dataframe['mol'] = dataframe['SMILES'].apply(Chem.MolFromSmiles)
+    print(dataframe['SMILES'][0])
+    create_sort_and_slice_e3fp_featuriser(mols_train = dataframe['mol'] , 
+                                          max_radius = 2, 
+                                          pharm_atom_invs = False, 
+                                          bond_invs = True, 
+                                          chirality = False, 
+                                          sub_counts = True, 
+                                          vec_dimension = 1024, 
+                                          break_ties_with = lambda sub_id: sub_id, 
+                                          print_train_set_info = True)
+    
+
+
+
