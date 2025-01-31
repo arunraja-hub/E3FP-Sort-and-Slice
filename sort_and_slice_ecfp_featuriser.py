@@ -27,7 +27,9 @@ from e3fp.fingerprint.fprint import Fingerprint, CountFingerprint
 
 from e3fp.fingerprint.fprinter import Fingerprinter
 
-def create_sort_and_slice_e3fp_featuriser(mols_train, 
+from collections import Counter
+
+def create_sort_and_slice_e3fp_featuriser(smiles_train,
                                           max_radius = 2, 
                                           pharm_atom_invs = False, 
                                           bond_invs = True, 
@@ -106,34 +108,49 @@ def create_sort_and_slice_e3fp_featuriser(mols_train,
     e3fp_generator = Fingerprinter(bits=1024, level=5, radius_multiplier=1.718, 
                        stereo=True, counts=False, include_disconnected=True, 
                        rdkit_invariants=False, exclude_floating=True, remove_duplicate_substructs=True)
-    mole = mols_train[0]#
-    mole.SetProp("_Name", 'smiles')
-    # Chem.AddHs(mole, add_coords=True)
-    AllChem.EmbedMolecule(mole, maxAttempts=1000)
-    e3fp_generator.run(conf = mole.GetConformer(), mol = mole)
-    substructures = {}
-    substructures[mole] = e3fp_generator.func_identifiers_to_shells()
-    # e3fp_generator.substructs_to_pdb(level=5, bits=None, out_dir='substructs_bits_1024', reorient=True, exact=False)
-    # run(conf = mole.GetConformer(), mol = mole,  return_substruct= True)
-    breakpoint()
-    # create a function sub_id_enumerator that maps a mol object to a dictionary whose keys are the integer substructure identifiers in mol and whose values are the associated substructure counts (i.e., how often each substructure appears in mol)
-    morgan_generator = rdFingerprintGenerator.GetMorganGenerator(radius = max_radius,
-                                                                 atomInvariantsGenerator = rdFingerprintGenerator.GetMorganFeatureAtomInvGen() if pharm_atom_invs == True else rdFingerprintGenerator.GetMorganAtomInvGen(includeRingMembership = True),
-                                                                 useBondTypes = bond_invs,
-                                                                 includeChirality = chirality)
+    # mole = mols_train[0]
+    substructures_per_mol = {}
+    for smiles in smiles_train:
+        mol = Chem.MolFromSmiles(smiles)
+        mol.SetProp("_Name", smiles)
+        mol = Chem.AddHs(mol, addCoords=True)
+        AllChem.EmbedMolecule(mol, maxAttempts=5000, useRandomCoords=True)
+        # AllChem.UFFOptimizeMolecule(mol)
+        try:
+            conf_ = mol.GetConformer()
+            e3fp_generator.run(conf = conf_, mol = mol)
+            substructures_per_mol[smiles] = e3fp_generator.get_all_shells().keys()
+        except:
+            print('bad conformer')
+            continue 
+        
+        # breakpoint()
+
+    # # e3fp_generator.substructs_to_pdb(level=5, bits=None, out_dir='substructs_bits_1024', reorient=True, exact=False)
+    # # run(conf = mole.GetConformer(), mol = mole,  return_substruct= True)
+    # breakpoint()
+    # # create a function sub_id_enumerator that maps a mol object to a dictionary whose keys are the integer substructure identifiers in mol and whose values are the associated substructure counts (i.e., how often each substructure appears in mol)
+    # morgan_generator = rdFingerprintGenerator.GetMorganGenerator(radius = max_radius,
+    #                                                              atomInvariantsGenerator = rdFingerprintGenerator.GetMorganFeatureAtomInvGen() if pharm_atom_invs == True else rdFingerprintGenerator.GetMorganAtomInvGen(includeRingMembership = True),
+    #                                                              useBondTypes = bond_invs,
+    #                                                              includeChirality = chirality)
     
-    sub_id_enumerator = lambda mol: morgan_generator.GetSparseCountFingerprint(mole).GetNonzeroElements()
+    # sub_id_enumerator = lambda mol: morgan_generator.GetSparseCountFingerprint(mole).GetNonzeroElements()
     
     # construct dictionary that maps each integer substructure identifier sub_id in mols_train to its associated prevalence (i.e., to the total number of compounds in mols_train that contain sub_id at least once)
     sub_ids_to_prevs_dict = {}
-    for mol in mols_train:
-        for sub_id in sub_id_enumerator(mol).keys():
-            sub_ids_to_prevs_dict[sub_id] = sub_ids_to_prevs_dict.get(sub_id, 0) + 1
-    breakpoint()
+    for s in smiles_train:
+        if s in substructures_per_mol.keys():
+            for sub_id in substructures_per_mol[s] :
+                sub_ids_to_prevs_dict[sub_id] = sub_ids_to_prevs_dict.get(sub_id, 0) + 1
+
+    # sub_ids_to_prevs_dict = Counter(substructures_per_mol.values())
+
+    # breakpoint()
 
     # create list of integer substructure identifiers sorted by prevalence in mols_train
     sub_ids_sorted_list = sorted(sub_ids_to_prevs_dict, key = lambda sub_id: (sub_ids_to_prevs_dict[sub_id], break_ties_with(sub_id)), reverse = True)
-    breakpoint()
+    # breakpoint()
     
     # create auxiliary function that generates standard unit vectors in NumPy
     def standard_unit_vector(dim, k):
@@ -149,22 +166,24 @@ def create_sort_and_slice_e3fp_featuriser(mols_train,
         return standard_unit_vector(vec_dimension, sub_ids_sorted_list.index(sub_id)) if sub_id in sub_ids_sorted_list[0: vec_dimension] else np.zeros(vec_dimension)
     
     # create a function ecfp_featuriser that maps RDKit mol objects to vectorial ECFPs via a Sort & Slice substructure pooling operator trained on mols_train
-    def ecfp_featuriser(mol):
+    def ecfp_featuriser(s):
 
         # create list of integer substructure identifiers contained in input mol object (multiplied by how often they are structurally contained in mol if sub_counts = True)
         if sub_counts == True:
-            sub_id_list = [sub_idd for (sub_id, count) in sub_id_enumerator(mol).items() for sub_idd in [sub_id]*count]
+            # breakpoint()
+            sub_id_list = [sub_idd for (sub_id, count) in dict(Counter(substructures_per_mol[s])).items() for sub_idd in [sub_id]*count]
         else:
-            sub_id_list = list(sub_id_enumerator(mol).keys())
+            sub_id_list = list(substructures_per_mol[s])
         
         # create molecule-wide vectorial representation by summing up one-hot encoded substructure identifiers
         ecfp_vector = np.sum(np.array([sub_id_one_hot_encoder(sub_id) for sub_id in sub_id_list]), axis = 0)
     
+        print('len ecfp_vector', len(ecfp_vector))
         return ecfp_vector
     
     # print information on training set
     if print_train_set_info == True:
-        print("Number of compounds in molecular training set = ", len(mols_train))
+        print("Number of compounds in molecular training set which have conformers= ", len(substructures_per_mol))
         print("Number of unique circular substructures with the specified parameters in molecular training set = ", len(sub_ids_to_prevs_dict))
 
     return ecfp_featuriser
@@ -180,8 +199,9 @@ if __name__ == "__main__":
     dataframe = pd.read_csv("data/" + settings_dict["dataset_name"] + "/" + "clean_data.csv", sep = ",")
     # smiles = dataframe["SMILES"]
     dataframe['mol'] = dataframe['SMILES'].apply(Chem.MolFromSmiles)
-    print(dataframe['SMILES'][0])
-    create_sort_and_slice_e3fp_featuriser(mols_train = dataframe['mol'] , 
+    # print(dataframe['SMILES'][0])
+    featuriser = create_sort_and_slice_e3fp_featuriser(smiles_train = dataframe['SMILES'],
+                                        #   mols_train = dataframe['mol'] [:100] , 
                                           max_radius = 2, 
                                           pharm_atom_invs = False, 
                                           bond_invs = True, 
@@ -190,6 +210,9 @@ if __name__ == "__main__":
                                           vec_dimension = 1024, 
                                           break_ties_with = lambda sub_id: sub_id, 
                                           print_train_set_info = True)
+    # breakpoint()
+    X = list(map(featuriser, dataframe['SMILES'].tolist()))
+    print(X)
     
 
 
